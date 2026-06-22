@@ -59,10 +59,20 @@ function handleLogo(tipo, input) {
   }
   const reader = new FileReader();
   reader.onload = (e) => {
-    logosData[tipo] = e.target.result;
-    document.getElementById("lp-" + tipo).innerHTML = `<img src="${e.target.result}" class="logo-preview" alt="Logo">
-       <div style="font-size:11px;color:var(--green);margin-top:5px;font-weight:600">✓ ${file.name}</div>
-       <div style="font-size:10.5px;color:var(--muted);margin-top:2px;cursor:pointer;text-decoration:underline" onclick="removeLogo('${tipo}')">Remover</div>`;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(300 / img.width, 100 / img.height, 1);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      const compressed = canvas.toDataURL("image/jpeg", 0.7);
+      logosData[tipo] = compressed;
+      document.getElementById("lp-" + tipo).innerHTML = `<img src="${compressed}" class="logo-preview" alt="Logo">
+         <div style="font-size:11px;color:var(--green);margin-top:5px;font-weight:600">✓ ${file.name}</div>
+         <div style="font-size:10.5px;color:var(--muted);margin-top:2px;cursor:pointer;text-decoration:underline" onclick="removeLogo('${tipo}')">Remover</div>`;
+    };
+    img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
@@ -123,13 +133,6 @@ function syncCor(tipo) {
     hexInput.value = colorInput.value;
   }
 }
-document.addEventListener("DOMContentLoaded", () => {
-  ["primaria", "secundaria"].forEach((tipo) => {
-    document.getElementById("cor-" + tipo).addEventListener("input", () => {
-      document.getElementById("cor-" + tipo + "-hex").value = document.getElementById("cor-" + tipo).value;
-    });
-  });
-});
 function getCores() {
   return {
     primaria: document.getElementById("cor-primaria")?.value || "#1560F5",
@@ -419,7 +422,19 @@ function copyPrompt() {
     showToast("Monte o prompt primeiro.");
     return;
   }
-  navigator.clipboard.writeText(promptGerado).then(() => showToast("✓ Prompt copiado! Abra uma IA e cole com Ctrl+V."));
+  navigator.clipboard.writeText(promptGerado)
+    .then(() => showToast("✓ Prompt copiado! Abra uma IA e cole com Ctrl+V."))
+    .catch(() => {
+      const ta = document.createElement("textarea");
+      ta.value = promptGerado;
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      showToast("✓ Prompt copiado! Abra uma IA e cole com Ctrl+V.");
+    });
 }
 
 // ─── FORMATAR ESCOPO ─────────────────────────────────────────────────────────
@@ -623,7 +638,8 @@ function md2html(md) {
   let lines = md.split("\n");
   let out = [],
     inList = false,
-    listType = "";
+    listType = "",
+    inTable = false;
 
   function closeList() {
     if (inList) {
@@ -633,12 +649,20 @@ function md2html(md) {
     }
   }
 
+  function closeTable() {
+    if (inTable) {
+      out.push("</table>");
+      inTable = false;
+    }
+  }
+
   for (let raw of lines) {
     let line = raw;
 
     // Orientações
     if (line.startsWith("ORIENTACAO:")) {
       closeList();
+      closeTable();
       const txt = line.slice(11).trim();
       out.push(`<div class="orientacao">${esc(txt)}<button class="rm-btn" onclick="this.parentElement.remove()" title="Remover esta orientação">✕</button></div>`);
       continue;
@@ -646,16 +670,19 @@ function md2html(md) {
     // Headings
     if (/^#{4,} (.+)$/.test(line)) {
       closeList();
+      closeTable();
       out.push(`<h3>${inlineFormat(line.replace(/^#+\s*/, ""))}</h3>`);
       continue;
     }
     if (/^### (.+)$/.test(line)) {
       closeList();
+      closeTable();
       out.push(`<h3>${inlineFormat(line.slice(4))}</h3>`);
       continue;
     }
     if (/^## (.+)$/.test(line)) {
       closeList();
+      closeTable();
       // Converter caixa alta para Title Case (mantém abreviações como ART, CNPJ, BIM)
       const h2raw = line.slice(3);
       const h2txt = titleCase(h2raw);
@@ -664,6 +691,7 @@ function md2html(md) {
     }
     if (/^# (.+)$/.test(line)) {
       closeList();
+      closeTable();
       const h1raw = line.slice(2);
       const h1txt = inlineFormat(titleCase(h1raw));
       // Título principal da proposta (linha sem número) recebe classe doc-titulo
@@ -673,6 +701,7 @@ function md2html(md) {
     }
     // Bullets
     if (/^\s*[-•*] (.+)$/.test(line)) {
+      closeTable();
       const txt = line.replace(/^\s*[-•*]\s*/, "");
       if (!inList || listType !== "ul") {
         closeList();
@@ -685,6 +714,7 @@ function md2html(md) {
     }
     // Numbered list
     if (/^\d+\.\s+(.+)$/.test(line)) {
+      closeTable();
       const txt = line.replace(/^\d+\.\s+/, "");
       if (!inList || listType !== "ol") {
         closeList();
@@ -705,35 +735,34 @@ function md2html(md) {
         .map((c) => c.trim());
       const isHeader = lines.indexOf(raw) > 0 && /^\|[\s\-|]+\|$/.test(lines[lines.indexOf(raw) + 1] || "");
       if (isHeader) {
-        out.push("<table><tr>" + cells.map((c) => `<th>${inlineFormat(c)}</th>`).join("") + "</tr>");
+        closeTable();
+        out.push("<table>");
+        inTable = true;
+        out.push("<tr>" + cells.map((c) => `<th>${inlineFormat(c)}</th>`).join("") + "</tr>");
         continue;
       }
-      // Check if we need to close a table
+      if (!inTable) {
+        out.push("<table>");
+        inTable = true;
+      }
       out.push("<tr>" + cells.map((c) => `<td>${inlineFormat(c)}</td>`).join("") + "</tr>");
       continue;
-    }
-    // Close table if line doesn't start with |
-    if (out.length && !line.startsWith("|") && out[out.length - 1] && (out[out.length - 1].startsWith("<tr>") || out[out.length - 1].startsWith("<th>"))) {
-      out.push("</table>");
     }
     // Empty line
     if (!line.trim()) {
       closeList();
+      closeTable();
       out.push("");
       continue;
     }
     // Paragraph
     closeList();
+    closeTable();
     out.push(`<p>${inlineFormat(line)}</p>`);
   }
   closeList();
-  // Wrap tables
-  let html = out.join("\n");
-  html = html.replace(/(<tr>.*?<\/tr>\n*)+/gs, (m) => {
-    if (!m.includes("<table>")) return `<table>${m}</table>`;
-    return m;
-  });
-  return html;
+  closeTable();
+  return out.join("\n");
 }
 
 function inlineFormat(s) {
@@ -845,7 +874,7 @@ li{margin-bottom:3pt;font-size:10.5pt}
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   btn.disabled = false;
-  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Word (.docx)';
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Word (.doc)';
   showToast("✓ Arquivo Word baixado! Abra no Word e salve como .docx se necessário.");
 }
 
@@ -857,6 +886,7 @@ function baixarPptx() {
 
   // Carregar PptxGenJS via CDN se ainda não estiver disponível
   function gerarComLib() {
+    const docEl = document.getElementById("doc-content");
     // Extrair seções do documento
     const sections = [];
     let current = null;
@@ -1125,9 +1155,6 @@ function copiarAbrirIA() {
     });
 }
 
-function copyPrompt() {
-  copiarAbrirIA();
-}
 
 // ─── SALVAR / IMPORTAR ───────────────────────────────────────────────────────
 function salvarHTML() {
@@ -1295,6 +1322,13 @@ function importarHTML(input) {
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", function () {
+  // Sync seletores de cor com campos hex
+  ["primaria", "secundaria"].forEach((tipo) => {
+    document.getElementById("cor-" + tipo).addEventListener("input", () => {
+      document.getElementById("cor-" + tipo + "-hex").value = document.getElementById("cor-" + tipo).value;
+    });
+  });
+
   // Checkboxes de serviços
   document.getElementById("servicos-grid").innerHTML = SERVICOS_LISTA.map(
     (s, i) => `
